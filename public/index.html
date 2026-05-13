@@ -51,7 +51,7 @@
     </div>
 
     <script type="module">
-        import { PLAYER_SPRITE, drawSprite, spriteWidth, spriteHeight } from './js/sprites.js';
+        import { PLAYER_SPRITE, BULLET_SPRITE, drawSprite, spriteWidth, spriteHeight } from './js/sprites.js';
 
         // ---------- Browser-/Device-Detection ----------
         const isTouch = 'ontouchstart' in window
@@ -105,16 +105,49 @@
         }
         resetPlayerPosition();
 
+        // ---------- Audio (Web Audio API, lazy + iOS-Unlock) ----------
+        let audioCtx = null;
+        function ensureAudio() {
+            if (!audioCtx) {
+                const Ctor = window.AudioContext || window.webkitAudioContext;
+                if (Ctor) audioCtx = new Ctor();
+            }
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+        function playPew() {
+            if (!audioCtx) return;
+            const t0 = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(800, t0);
+            osc.frequency.exponentialRampToValueAtTime(200, t0 + 0.08);
+            gain.gain.setValueAtTime(0.15, t0);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.08);
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start(t0);
+            osc.stop(t0 + 0.09);
+        }
+        // User-Geste -> Audio entsperren
+        ['keydown', 'click', 'touchstart'].forEach(ev => {
+            window.addEventListener(ev, ensureAudio, { passive: true });
+        });
+
         // ---------- Input: Tastatur ----------
         const keys = Object.create(null);
         document.addEventListener('keydown', (e) => {
-            keys[e.key] = true;
+            // Space normalisieren auf 'Space'
+            const k = (e.key === ' ' || e.code === 'Space') ? 'Space' : e.key;
+            keys[k] = true;
             if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
                 e.preventDefault();
             }
         });
         document.addEventListener('keyup', (e) => {
-            keys[e.key] = false;
+            const k = (e.key === ' ' || e.code === 'Space') ? 'Space' : e.key;
+            keys[k] = false;
         });
 
         // ---------- Input: Touch (Drag) ----------
@@ -135,6 +168,41 @@
         canvas.addEventListener('touchmove',   handleTouch, { passive: false });
         canvas.addEventListener('touchend',    endTouch,    { passive: false });
         canvas.addEventListener('touchcancel', endTouch,    { passive: false });
+
+        // ---------- Touch Auto-Fire ----------
+        // Auf Touch-Devices alle 500ms automatisch schiessen, solange Spiel laeuft.
+        // Phase 7 fuehrt PLAYING-State ein; bis dahin: gameRunning = true.
+        const gameRunning = true;
+        if (isTouch) {
+            setInterval(() => {
+                if (gameRunning) keys['Space'] = true;
+            }, 500);
+        }
+
+        // ---------- Geschosse ----------
+        const bullets = [];
+        let lastShoot = 0;
+        const SHOOT_COOLDOWN_MS = 250;
+
+        function tryShoot() {
+            const now = Date.now();
+            if (now - lastShoot < SHOOT_COOLDOWN_MS) return;
+            lastShoot = now;
+
+            const scale = getSpriteScale();
+            const pw = spriteWidth(PLAYER_SPRITE) * scale;
+            const bw = spriteWidth(BULLET_SPRITE) * scale;
+            const bh = spriteHeight(BULLET_SPRITE) * scale;
+
+            bullets.push({
+                x: player.x + pw / 2 - bw / 2,
+                y: player.y - bh
+            });
+            playPew();
+
+            // Auto-Fire-Trigger sofort zuruecksetzen, naechster Tick setzt wieder true
+            if (isTouch) keys['Space'] = false;
+        }
 
         // ---------- Game-Loop ----------
         let lastTime = performance.now();
@@ -169,6 +237,18 @@
             // Begrenzung
             if (player.x < 0) player.x = 0;
             if (player.x + pw > canvas.width) player.x = canvas.width - pw;
+
+            // Schiessen
+            if (keys['Space']) tryShoot();
+
+            // Geschosse bewegen (Querung von unten nach oben in ~1s)
+            const bulletSpeed = canvas.height / 1.0; // px/s
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                bullets[i].y -= bulletSpeed * dt;
+                if (bullets[i].y + spriteHeight(BULLET_SPRITE) * scale < 0) {
+                    bullets.splice(i, 1);
+                }
+            }
         }
 
         function render() {
@@ -177,6 +257,11 @@
 
             const scale = getSpriteScale();
             drawSprite(ctx, PLAYER_SPRITE, Math.round(player.x), Math.round(player.y), scale, '#ffffff');
+
+            // Geschosse
+            for (const b of bullets) {
+                drawSprite(ctx, BULLET_SPRITE, Math.round(b.x), Math.round(b.y), scale, '#ffffff');
+            }
         }
 
         function loop(now) {
