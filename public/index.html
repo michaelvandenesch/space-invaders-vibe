@@ -72,6 +72,56 @@
             visibility: hidden;
         }
         #hud.visible { visibility: visible; }
+        #startOverlay {
+            position: absolute;
+            left: 50%;
+            top: 65%;
+            transform: translate(-50%, -50%);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            text-align: center;
+            width: 80%;
+            pointer-events: auto;
+        }
+        #startOverlay.visible { display: flex; }
+        #nameInput {
+            background: #000;
+            color: #fff;
+            border: 1px solid #fff;
+            font-family: 'Courier New', monospace;
+            font-size: 1.1rem;
+            letter-spacing: 0.15em;
+            padding: 8px 10px;
+            text-align: center;
+            width: min(280px, 90%);
+            outline: none;
+            text-transform: uppercase;
+        }
+        #nameHelp {
+            font-size: 0.7rem;
+            opacity: 0.75;
+            letter-spacing: 0.05em;
+        }
+        #bestLine {
+            font-size: 0.85rem;
+            letter-spacing: 0.15em;
+            margin-top: 6px;
+        }
+        #resetLink {
+            font-size: 0.7rem;
+            color: #888;
+            text-decoration: underline;
+            cursor: pointer;
+            margin-top: 4px;
+            background: none;
+            border: none;
+            font-family: inherit;
+        }
+        #resetLink:hover { color: #fff; }
     </style>
 </head>
 <body>
@@ -80,6 +130,12 @@
         <div id="stage">
             <canvas id="game"></canvas>
             <button id="quitBtn" type="button">QUIT</button>
+            <div id="startOverlay">
+                <input id="nameInput" type="text" maxlength="12" placeholder="DEIN NAME" autocomplete="off" spellcheck="false">
+                <div id="nameHelp">Dein Spielername wird lokal in deinem Browser gespeichert</div>
+                <div id="bestLine"></div>
+                <button id="resetLink" type="button">Reset Highscore</button>
+            </div>
         </div>
         <div id="hud">
             <span id="scoreLabel">SCORE: 0000</span>
@@ -98,6 +154,60 @@
         const isTouch = 'ontouchstart' in window
             || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
         window.__isTouch = isTouch; // global verfuegbar fuer spaetere Phasen
+
+        // ---------- localStorage Highscore ----------
+        const LS_NAME = 'playerName';
+        const LS_HS   = 'highScore';
+        const LS_HSW  = 'highScoreWave';
+
+        function sanitizeName(s) {
+            return (s || '').toUpperCase().replace(/[^A-Z0-9 \-]/g, '').slice(0, 12);
+        }
+        function getHighScore() {
+            const v = parseInt(localStorage.getItem(LS_HS) || '0', 10);
+            return Number.isFinite(v) ? v : 0;
+        }
+        function getHighScoreWave() {
+            const v = parseInt(localStorage.getItem(LS_HSW) || '0', 10);
+            return Number.isFinite(v) ? v : 0;
+        }
+        let isNewHighScore = false;
+
+        const nameInput = document.getElementById('nameInput');
+        const startOverlay = document.getElementById('startOverlay');
+        const bestLine = document.getElementById('bestLine');
+        const resetLink = document.getElementById('resetLink');
+
+        nameInput.value = sanitizeName(localStorage.getItem(LS_NAME) || '');
+        nameInput.addEventListener('focus', () => nameInput.select());
+        nameInput.addEventListener('input', () => {
+            nameInput.value = sanitizeName(nameInput.value);
+            localStorage.setItem(LS_NAME, nameInput.value);
+        });
+        nameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                nameInput.blur();
+            }
+        });
+
+        resetLink.addEventListener('click', (e) => {
+            e.stopPropagation();
+            localStorage.removeItem(LS_HS);
+            localStorage.removeItem(LS_HSW);
+            updateBestLine();
+        });
+
+        function updateBestLine() {
+            const hs = getHighScore();
+            if (hs > 0) {
+                bestLine.textContent = 'DEIN BESTER: ' + hs + ' (Welle ' + getHighScoreWave() + ')';
+            } else {
+                bestLine.textContent = '';
+            }
+        }
+        updateBestLine();
 
         // ---------- Canvas-Setup, responsive 4:3 ----------
         const canvas = document.getElementById('game');
@@ -555,6 +665,12 @@
             } else {
                 quitBtn.classList.remove('visible');
             }
+            if (state === STATE.START) {
+                startOverlay.classList.add('visible');
+                updateBestLine();
+            } else {
+                startOverlay.classList.remove('visible');
+            }
         }
 
         function resetAliens() {
@@ -597,6 +713,13 @@
 
         function gameOver() {
             state = STATE.GAME_OVER;
+            // Highscore aktualisieren
+            isNewHighScore = false;
+            if (score > getHighScore()) {
+                localStorage.setItem(LS_HS, String(score));
+                localStorage.setItem(LS_HSW, String(wave));
+                isNewHighScore = true;
+            }
             playGameOver();
             updateHud();
         }
@@ -611,6 +734,8 @@
 
         // Tastatur-Aktionen fuer State-Wechsel
         document.addEventListener('keydown', (e) => {
+            // Wenn das Namensfeld fokussiert ist: Space etc. nicht als Game-Input verarbeiten
+            if (document.activeElement === nameInput) return;
             const k = (e.key === ' ' || e.code === 'Space') ? 'Space' : e.key;
             if (k === 'Space') {
                 if (state === STATE.START) startGame();
@@ -814,21 +939,27 @@
             }
 
             if (state === STATE.START) {
-                drawCenteredText('SPACE INVADERS', canvas.height * 0.4, Math.floor(canvas.width * 0.07));
+                drawCenteredText('SPACE INVADERS', canvas.height * 0.25, Math.floor(canvas.width * 0.07));
                 const prompt = isTouch ? 'TAP TO START' : 'PRESS SPACE TO START';
-                drawCenteredText(prompt, canvas.height * 0.6, Math.floor(canvas.width * 0.035));
+                drawCenteredText(prompt, canvas.height * 0.42, Math.floor(canvas.width * 0.035));
             } else if (state === STATE.GAME_OVER) {
                 ctx.fillStyle = 'rgba(0,0,0,0.7)';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
-                drawCenteredText('GAME OVER', canvas.height * 0.35, Math.floor(canvas.width * 0.08), '#ff4444');
+                drawCenteredText('GAME OVER', canvas.height * 0.22, Math.floor(canvas.width * 0.08), '#ff4444');
+                const name = sanitizeName(localStorage.getItem(LS_NAME) || '') || 'PLAYER';
+                drawCenteredText(name, canvas.height * 0.34, Math.floor(canvas.width * 0.05));
                 drawCenteredText('SCORE: ' + String(score).padStart(4, '0'),
-                    canvas.height * 0.5, Math.floor(canvas.width * 0.04));
+                    canvas.height * 0.44, Math.floor(canvas.width * 0.04));
                 drawCenteredText('REACHED WAVE ' + wave,
-                    canvas.height * 0.58, Math.floor(canvas.width * 0.035));
-                // Blink
+                    canvas.height * 0.51, Math.floor(canvas.width * 0.035));
+                drawCenteredText('DEIN BESTER SCORE: ' + getHighScore() + ' (Welle ' + getHighScoreWave() + ')',
+                    canvas.height * 0.60, Math.floor(canvas.width * 0.03));
+                if (isNewHighScore && Math.floor(performance.now() / 400) % 2 === 0) {
+                    drawCenteredText('NEW PERSONAL BEST!', canvas.height * 0.68, Math.floor(canvas.width * 0.04), '#ffd700');
+                }
                 if (Math.floor(performance.now() / 500) % 2 === 0) {
                     const prompt = isTouch ? 'TAP TO RESTART' : 'PRESS SPACE TO RESTART';
-                    drawCenteredText(prompt, canvas.height * 0.72, Math.floor(canvas.width * 0.035));
+                    drawCenteredText(prompt, canvas.height * 0.80, Math.floor(canvas.width * 0.035));
                 }
             }
         }
