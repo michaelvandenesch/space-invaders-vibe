@@ -13,21 +13,180 @@
             color: #fff;
             font-family: 'Courier New', monospace;
             overflow: hidden;
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: none;
         }
-        body {
+        #app {
+            min-height: 100vh;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
-            text-align: center;
+            gap: 16px;
+            padding: 12px;
+            box-sizing: border-box;
         }
         h1 {
-            font-size: 1.5rem;
-            letter-spacing: 0.2em;
             margin: 0;
+            font-size: clamp(1.4rem, 5vw, 2.5rem);
+            letter-spacing: 0.25em;
+            text-align: center;
+            color: #fff;
+        }
+        #game {
+            display: block;
+            background: #000;
+            border: 1px solid #fff;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            touch-action: none;
         }
     </style>
 </head>
 <body>
-    <h1>SPACE INVADERS &mdash; LOADING</h1>
+    <div id="app">
+        <h1>SPACE INVADERS</h1>
+        <canvas id="game"></canvas>
+    </div>
+
+    <script type="module">
+        import { PLAYER_SPRITE, drawSprite, spriteWidth, spriteHeight } from './js/sprites.js';
+
+        // ---------- Browser-/Device-Detection ----------
+        const isTouch = 'ontouchstart' in window
+            || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+        window.__isTouch = isTouch; // global verfuegbar fuer spaetere Phasen
+
+        // ---------- Canvas-Setup, responsive 4:3 ----------
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            const maxWidth = 800;
+            const titleAndPadding = 120;
+            const availW = window.innerWidth * 0.95;
+            const availH = window.innerHeight - titleAndPadding;
+
+            let w = Math.min(maxWidth, availW);
+            let h = w * 3 / 4;
+            if (h > availH) {
+                h = availH;
+                w = h * 4 / 3;
+            }
+            canvas.width  = Math.floor(w);
+            canvas.height = Math.floor(h);
+        }
+        window.addEventListener('resize', () => {
+            resizeCanvas();
+            resetPlayerPosition();
+        });
+        resizeCanvas();
+
+        // ---------- Sprite-Skalierung ----------
+        function getSpriteScale(baseFactor = 1) {
+            const factor = canvas.width >= 600 ? 3 : 2;
+            return factor * baseFactor;
+        }
+
+        // ---------- Spielerzustand ----------
+        const player = {
+            x: 0,
+            y: 0,
+            speed: 0 // px/s, wird pro Frame anhand Canvas-Breite gesetzt
+        };
+
+        function resetPlayerPosition() {
+            const scale = getSpriteScale();
+            const w = spriteWidth(PLAYER_SPRITE) * scale;
+            const h = spriteHeight(PLAYER_SPRITE) * scale;
+            player.x = (canvas.width - w) / 2;
+            player.y = canvas.height - h - 30;
+        }
+        resetPlayerPosition();
+
+        // ---------- Input: Tastatur ----------
+        const keys = Object.create(null);
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
+                e.preventDefault();
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+        // ---------- Input: Touch (Drag) ----------
+        let touchTargetX = null; // Ziel-X (Mitte des Schiffs) in Canvas-Koordinaten
+
+        function handleTouch(e) {
+            if (!e.touches || e.touches.length === 0) return;
+            const t = e.touches[0];
+            const rect = canvas.getBoundingClientRect();
+            const cssX = t.clientX - rect.left;
+            touchTargetX = cssX * (canvas.width / rect.width);
+            e.preventDefault();
+        }
+        function endTouch(e) {
+            touchTargetX = null;
+        }
+        canvas.addEventListener('touchstart',  handleTouch, { passive: false });
+        canvas.addEventListener('touchmove',   handleTouch, { passive: false });
+        canvas.addEventListener('touchend',    endTouch,    { passive: false });
+        canvas.addEventListener('touchcancel', endTouch,    { passive: false });
+
+        // ---------- Game-Loop ----------
+        let lastTime = performance.now();
+
+        function update(dt) {
+            const scale = getSpriteScale();
+            const pw = spriteWidth(PLAYER_SPRITE) * scale;
+            const ph = spriteHeight(PLAYER_SPRITE) * scale;
+
+            // Querung in ~2.5 s -> speed = canvas.width / 2.5 px/s
+            player.speed = canvas.width / 2.5;
+
+            // Tastatur
+            if (keys['ArrowLeft']  || keys['a'] || keys['A']) {
+                player.x -= player.speed * dt;
+            }
+            if (keys['ArrowRight'] || keys['d'] || keys['D']) {
+                player.x += player.speed * dt;
+            }
+
+            // Touch (Drag): Schiff folgt Finger horizontal, geglaettet mit Speed-Cap
+            if (touchTargetX !== null) {
+                const desired = touchTargetX - pw / 2;
+                const dx = desired - player.x;
+                const maxStep = player.speed * dt * 2;
+                player.x += Math.max(-maxStep, Math.min(maxStep, dx));
+            }
+
+            // Y immer am unteren Rand halten (auch bei Resize)
+            player.y = canvas.height - ph - 30;
+
+            // Begrenzung
+            if (player.x < 0) player.x = 0;
+            if (player.x + pw > canvas.width) player.x = canvas.width - pw;
+        }
+
+        function render() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const scale = getSpriteScale();
+            drawSprite(ctx, PLAYER_SPRITE, Math.round(player.x), Math.round(player.y), scale, '#ffffff');
+        }
+
+        function loop(now) {
+            const dt = Math.min(0.05, (now - lastTime) / 1000);
+            lastTime = now;
+            update(dt);
+            render();
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    </script>
 </body>
 </html>
