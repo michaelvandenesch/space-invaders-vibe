@@ -1,0 +1,11 @@
+{
+    "routes": [
+        {
+            "route": "/api/*"
+        }
+    ],
+    "navigationFallback": {
+        "rewrite": "/index.html",
+        "exclude": ["/api/*", "/js/*", "/*.{css,js,png,jpg,svg,ico}"]
+    }
+}
