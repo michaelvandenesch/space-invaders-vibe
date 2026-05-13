@@ -51,7 +51,11 @@
     </div>
 
     <script type="module">
-        import { PLAYER_SPRITE, BULLET_SPRITE, drawSprite, spriteWidth, spriteHeight } from './js/sprites.js';
+        import {
+            PLAYER_SPRITE, BULLET_SPRITE,
+            TUX_SPRITE, WINDOWS_SPRITE, CREEPER_SPRITE,
+            drawSprite, spriteWidth, spriteHeight
+        } from './js/sprites.js';
 
         // ---------- Browser-/Device-Detection ----------
         const isTouch = 'ontouchstart' in window
@@ -80,6 +84,7 @@
         window.addEventListener('resize', () => {
             resizeCanvas();
             resetPlayerPosition();
+            computeFormation();
         });
         resizeCanvas();
 
@@ -129,6 +134,20 @@
             osc.connect(gain).connect(audioCtx.destination);
             osc.start(t0);
             osc.stop(t0 + 0.09);
+        }
+        const MARCH_FREQS = [100, 90, 80, 70];
+        function playMarch(step) {
+            if (!audioCtx) return;
+            const t0 = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(MARCH_FREQS[step % 4], t0);
+            gain.gain.setValueAtTime(0.08, t0);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.1);
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start(t0);
+            osc.stop(t0 + 0.11);
         }
         // User-Geste -> Audio entsperren
         ['keydown', 'click', 'touchstart'].forEach(ev => {
@@ -204,6 +223,135 @@
             if (isTouch) keys['Space'] = false;
         }
 
+        // ---------- Alien-Formation ----------
+        // Reihe 0: TUX (30), Reihen 1-2: WINDOWS (20), Reihe 3: CREEPER (10)
+        const ALIEN_ROWS = 4;
+        const ALIEN_COLS = 11;
+        const ALIEN_TYPES = [
+            { sprite: TUX_SPRITE,     points: 30 },
+            { sprite: WINDOWS_SPRITE, points: 20 },
+            { sprite: WINDOWS_SPRITE, points: 20 },
+            { sprite: CREEPER_SPRITE, points: 10 }
+        ];
+        // Einheitliche Zellbreite/-hoehe basierend auf groesstem Sprite
+        const ALIEN_CELL_W = Math.max(
+            spriteWidth(TUX_SPRITE),
+            spriteWidth(WINDOWS_SPRITE),
+            spriteWidth(CREEPER_SPRITE)
+        );
+        const ALIEN_CELL_H = Math.max(
+            spriteHeight(TUX_SPRITE),
+            spriteHeight(WINDOWS_SPRITE),
+            spriteHeight(CREEPER_SPRITE)
+        );
+
+        const aliens = [];
+        for (let r = 0; r < ALIEN_ROWS; r++) {
+            for (let c = 0; c < ALIEN_COLS; c++) {
+                aliens.push({ row: r, col: c, alive: true, type: r });
+            }
+        }
+
+        // Formations-Layout (wird bei Resize neu berechnet)
+        const formation = {
+            scale: 3,
+            colSpacing: 0,
+            rowSpacing: 0,
+            offsetX: 0,
+            offsetY: 0,
+            dir: 1, // 1 = rechts, -1 = links
+            blockW: 0,
+            blockH: 0
+        };
+
+        function computeFormation() {
+            const mobile = canvas.width < 600;
+            // Basis-Skalierung: Desktop 3, Mobile 1.5
+            let scale = mobile ? 1.5 : 3;
+
+            // Spacing in % der Sprite-Zellbreite/-hoehe
+            // Spalten dynamisch reduzieren, damit Block + 15% Padding pro Seite passt
+            const maxBlockW = canvas.width * 0.7;
+            let colSpacing;
+            // Probiere Skalierung ggf. reduzieren
+            while (true) {
+                const renderW = ALIEN_CELL_W * scale;
+                colSpacing = Math.max(2, renderW * 0.25);
+                const blockW = renderW * ALIEN_COLS + colSpacing * (ALIEN_COLS - 1);
+                if (blockW <= maxBlockW || scale <= 0.5) break;
+                scale -= 0.1;
+            }
+
+            const renderW = ALIEN_CELL_W * scale;
+            const renderH = ALIEN_CELL_H * scale;
+            const rowSpacing = mobile ? canvas.height * 0.03 : canvas.height * 0.05;
+            const blockW = renderW * ALIEN_COLS + colSpacing * (ALIEN_COLS - 1);
+            const blockH = renderH * ALIEN_ROWS + rowSpacing * (ALIEN_ROWS - 1);
+            const topPad = (mobile ? 0.08 : 0.13) * canvas.height;
+
+            formation.scale = scale;
+            formation.colSpacing = colSpacing;
+            formation.rowSpacing = rowSpacing;
+            formation.offsetX = (canvas.width - blockW) / 2;
+            formation.offsetY = topPad;
+            formation.blockW = blockW;
+            formation.blockH = blockH;
+        }
+        computeFormation();
+
+        function alienRenderPos(a) {
+            const renderW = ALIEN_CELL_W * formation.scale;
+            const renderH = ALIEN_CELL_H * formation.scale;
+            const x = formation.offsetX + a.col * (renderW + formation.colSpacing);
+            const y = formation.offsetY + a.row * (renderH + formation.rowSpacing);
+            // Sprite innerhalb der Zelle zentrieren
+            const sw = spriteWidth(ALIEN_TYPES[a.type].sprite) * formation.scale;
+            const sh = spriteHeight(ALIEN_TYPES[a.type].sprite) * formation.scale;
+            return { x: x + (renderW - sw) / 2, y: y + (renderH - sh) / 2, w: sw, h: sh };
+        }
+
+        // Tempo: linear 900ms (44 alive) -> 150ms (1 alive)
+        function alienTickInterval(aliveCount) {
+            if (aliveCount <= 1) return 150;
+            return 150 + (900 - 150) * (aliveCount - 1) / (ALIEN_ROWS * ALIEN_COLS - 1);
+        }
+
+        let lastAlienTick = 0;
+        let marchStep = 0;
+
+        function stepAliens() {
+            const renderW = ALIEN_CELL_W * formation.scale;
+            const stepX = renderW * 0.2; // horizontaler Schritt
+            const stepY = canvas.height * 0.045;
+
+            // Lebende Aliens links/rechts pruefen
+            let minX = Infinity, maxX = -Infinity;
+            for (const a of aliens) {
+                if (!a.alive) continue;
+                const p = alienRenderPos(a);
+                if (p.x < minX) minX = p.x;
+                if (p.x + p.w > maxX) maxX = p.x + p.w;
+            }
+            if (minX === Infinity) return; // keine mehr
+
+            const nextMin = minX + stepX * formation.dir;
+            const nextMax = maxX + stepX * formation.dir;
+            if (nextMax > canvas.width || nextMin < 0) {
+                formation.dir *= -1;
+                formation.offsetY += stepY;
+            } else {
+                formation.offsetX += stepX * formation.dir;
+            }
+
+            playMarch(marchStep++);
+        }
+
+        function aliveAliens() {
+            let n = 0;
+            for (const a of aliens) if (a.alive) n++;
+            return n;
+        }
+
         // ---------- Game-Loop ----------
         let lastTime = performance.now();
 
@@ -249,6 +397,14 @@
                     bullets.splice(i, 1);
                 }
             }
+
+            // Alien-Marsch (Tick-basiert, Tempo abhaengig von Anzahl)
+            const now = performance.now();
+            const interval = alienTickInterval(aliveAliens());
+            if (now - lastAlienTick >= interval) {
+                lastAlienTick = now;
+                stepAliens();
+            }
         }
 
         function render() {
@@ -261,6 +417,15 @@
             // Geschosse
             for (const b of bullets) {
                 drawSprite(ctx, BULLET_SPRITE, Math.round(b.x), Math.round(b.y), scale, '#ffffff');
+            }
+
+            // Aliens
+            for (const a of aliens) {
+                if (!a.alive) continue;
+                const t = ALIEN_TYPES[a.type];
+                const p = alienRenderPos(a);
+                // TUX und CREEPER haben eigene Palette; WINDOWS auch. Farbe '#ffffff' wirkt nur auf 'X'.
+                drawSprite(ctx, t.sprite, Math.round(p.x), Math.round(p.y), formation.scale, '#ffffff');
             }
         }
 
