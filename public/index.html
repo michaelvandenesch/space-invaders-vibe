@@ -89,7 +89,7 @@
 
     <script type="module">
         import {
-            PLAYER_SPRITE, BULLET_SPRITE,
+            PLAYER_SPRITE, BULLET_SPRITE, ALIEN_BULLET_SPRITE, BUNKER_SPRITE,
             TUX_SPRITE, WINDOWS_SPRITE, CREEPER_SPRITE,
             drawSprite, spriteWidth, spriteHeight
         } from './js/sprites.js';
@@ -122,6 +122,7 @@
             resizeCanvas();
             resetPlayerPosition();
             computeFormation();
+            if (state !== STATE.START) buildBunkers();
         });
         resizeCanvas();
 
@@ -416,7 +417,119 @@
             for (const a of aliens) if (a.alive) n++;
             return n;
         }
+        // ---------- Alien-Geschosse ----------
+        const alienBullets = [];
+        let nextAlienShootAt = 0;
 
+        function scheduleNextAlienShot() {
+            // 1-2 Sekunden, durch speedMultiplier beschleunigt
+            const ms = (1000 + Math.random() * 1000) / Math.max(1, speedMultiplier);
+            nextAlienShootAt = performance.now() + ms;
+        }
+
+        function alienShoot() {
+            // Pro Spalte: tiefster lebender Alien
+            const lowestPerCol = new Map();
+            for (const a of aliens) {
+                if (!a.alive) continue;
+                const cur = lowestPerCol.get(a.col);
+                if (!cur || a.row > cur.row) lowestPerCol.set(a.col, a);
+            }
+            if (lowestPerCol.size === 0) return;
+            const shooters = [...lowestPerCol.values()];
+            const shooter = shooters[Math.floor(Math.random() * shooters.length)];
+            const p = alienRenderPos(shooter);
+            const scale = getSpriteScale();
+            const bw = spriteWidth(ALIEN_BULLET_SPRITE) * scale;
+            alienBullets.push({
+                x: p.x + p.w / 2 - bw / 2,
+                y: p.y + p.h
+            });
+        }
+
+        // ---------- Bunker ----------
+        const BUNKER_COUNT = 4;
+        const bunkers = []; // { grid, x, y, scale }
+
+        function bunkerScale() {
+            return canvas.width >= 600 ? 3 : 1.5;
+        }
+
+        function buildBunkers() {
+            bunkers.length = 0;
+            const scale = bunkerScale();
+            const w = spriteWidth(BUNKER_SPRITE) * scale;
+            const h = spriteHeight(BUNKER_SPRITE) * scale;
+            const yRatio = canvas.width >= 600 ? 0.75 : 0.60;
+            const y = canvas.height * yRatio - h / 2;
+            // gleichmaessig zwischen 10% und 90% Canvas-Breite
+            const left = canvas.width * 0.1;
+            const right = canvas.width * 0.9;
+            const slot = (right - left) / BUNKER_COUNT;
+            for (let i = 0; i < BUNKER_COUNT; i++) {
+                const cx = left + slot * (i + 0.5);
+                bunkers.push({
+                    grid: BUNKER_SPRITE.map(row => row.split('')),
+                    x: cx - w / 2,
+                    y: y,
+                    scale: scale
+                });
+            }
+        }
+
+        function bunkerPixelHit(bunker, bx, by, bw, bh) {
+            // Pruefe Pixel-Genau, ob Geschoss-Box ein gefuelltes Pixel beruehrt.
+            // Bei Treffer: Pixel + kleine Umgebung loeschen, return true.
+            const s = bunker.scale;
+            const rows = bunker.grid.length;
+            const cols = bunker.grid[0].length;
+            // Berechne Pixel-Indizes der Box
+            const c0 = Math.max(0, Math.floor((bx - bunker.x) / s));
+            const c1 = Math.min(cols - 1, Math.floor((bx + bw - 1 - bunker.x) / s));
+            const r0 = Math.max(0, Math.floor((by - bunker.y) / s));
+            const r1 = Math.min(rows - 1, Math.floor((by + bh - 1 - bunker.y) / s));
+            if (c1 < 0 || r1 < 0 || c0 >= cols || r0 >= rows) return false;
+
+            let hitR = -1, hitC = -1;
+            for (let r = r0; r <= r1; r++) {
+                for (let c = c0; c <= c1; c++) {
+                    if (bunker.grid[r][c] !== '.') {
+                        hitR = r; hitC = c; break;
+                    }
+                }
+                if (hitR !== -1) break;
+            }
+            if (hitR === -1) return false;
+
+            // Chunk loeschen: 3x3 um Trefferpunkt
+            for (let dr = -1; dr <= 1; dr++) {
+                for (let dc = -1; dc <= 1; dc++) {
+                    const rr = hitR + dr, cc = hitC + dc;
+                    if (rr >= 0 && rr < rows && cc >= 0 && cc < cols) {
+                        bunker.grid[rr][cc] = '.';
+                    }
+                }
+            }
+            return true;
+        }
+
+        function checkBunkerCollision(bx, by, bw, bh) {
+            for (const bk of bunkers) {
+                // Bounding box check zuerst
+                const w = spriteWidth(BUNKER_SPRITE) * bk.scale;
+                const h = spriteHeight(BUNKER_SPRITE) * bk.scale;
+                if (bx + bw <= bk.x || bx >= bk.x + w ||
+                    by + bh <= bk.y || by >= bk.y + h) continue;
+                if (bunkerPixelHit(bk, bx, by, bw, bh)) return true;
+            }
+            return false;
+        }
+
+        function drawBunkers() {
+            for (const bk of bunkers) {
+                drawSprite(ctx, bk.grid.map(r => r.join('')), Math.round(bk.x), Math.round(bk.y), bk.scale, '#3cff3c');
+            }
+        }
         // ---------- Spiel-State ----------
         const STATE = { START: 'START', PLAYING: 'PLAYING', GAME_OVER: 'GAME_OVER' };
         let state = STATE.START;
@@ -463,8 +576,11 @@
             wave = 1;
             speedMultiplier = 1;
             bullets.length = 0;
+            alienBullets.length = 0;
             resetAliens();
+            buildBunkers();
             resetPlayerPosition();
+            scheduleNextAlienShot();
             state = STATE.PLAYING;
             updateHud();
         }
@@ -473,7 +589,10 @@
             wave += 1;
             speedMultiplier *= 1.5;
             bullets.length = 0;
+            alienBullets.length = 0;
             resetAliens();
+            buildBunkers();
+            scheduleNextAlienShot();
         }
 
         function gameOver() {
@@ -485,6 +604,7 @@
         function backToStart() {
             state = STATE.START;
             bullets.length = 0;
+            alienBullets.length = 0;
             resetAliens();
             updateHud();
         }
@@ -576,6 +696,11 @@
                     bullets.splice(i, 1);
                     continue;
                 }
+                // Bunker zuerst (klassisch: eigener Schuss zerstoert Bunker)
+                if (checkBunkerCollision(bullets[i].x, bullets[i].y, bw, bh)) {
+                    bullets.splice(i, 1);
+                    continue;
+                }
                 // Kollision mit Aliens (AABB)
                 let hit = false;
                 for (const a of aliens) {
@@ -593,6 +718,39 @@
                     }
                 }
                 if (hit) bullets.splice(i, 1);
+            }
+
+            // Alien-Geschosse bewegen
+            const abSpeed = canvas.height / 1.5;
+            const abw = spriteWidth(ALIEN_BULLET_SPRITE) * scale;
+            const abh = spriteHeight(ALIEN_BULLET_SPRITE) * scale;
+            for (let i = alienBullets.length - 1; i >= 0; i--) {
+                alienBullets[i].y += abSpeed * dt;
+                if (alienBullets[i].y > canvas.height) {
+                    alienBullets.splice(i, 1);
+                    continue;
+                }
+                // Bunker
+                if (checkBunkerCollision(alienBullets[i].x, alienBullets[i].y, abw, abh)) {
+                    alienBullets.splice(i, 1);
+                    continue;
+                }
+                // Spieler getroffen
+                if (alienBullets[i].x < player.x + pw &&
+                    alienBullets[i].x + abw > player.x &&
+                    alienBullets[i].y < player.y + ph &&
+                    alienBullets[i].y + abh > player.y) {
+                    alienBullets.splice(i, 1);
+                    playHit();
+                    gameOver();
+                    return;
+                }
+            }
+
+            // Alien-Schuss-Trigger
+            if (performance.now() >= nextAlienShootAt) {
+                alienShoot();
+                scheduleNextAlienShot();
             }
 
             // Welle abgeschlossen?
@@ -643,6 +801,10 @@
                 for (const b of bullets) {
                     drawSprite(ctx, BULLET_SPRITE, Math.round(b.x), Math.round(b.y), scale, '#ffffff');
                 }
+                for (const b of alienBullets) {
+                    drawSprite(ctx, ALIEN_BULLET_SPRITE, Math.round(b.x), Math.round(b.y), scale, '#ffffff');
+                }
+                drawBunkers();
                 for (const a of aliens) {
                     if (!a.alive) continue;
                     const t = ALIEN_TYPES[a.type];
