@@ -1,0 +1,3 @@
+RESOURCE_GROUP=rg-space-invaders
+STATIC_WEB_APP=swa-space-invaders
+LIVE_URL=https://happy-hill-0d64ed603.7.azurestaticapps.net
